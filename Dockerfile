@@ -11,7 +11,7 @@ RUN pip install uv
 COPY requirements.txt .
 
 # Install dependencies using uv
-RUN uv --system pip install -r requirements.txt
+RUN uv pip install -r requirements.txt --system 
 
 # Copy application code
 COPY app/ ./app/
