@@ -4,6 +4,7 @@ import json
 import sys
 import os
 from dotenv import load_dotenv
+from datetime import datetime
 
 # Load environment variables from .env file
 load_dotenv()
@@ -18,6 +19,12 @@ def get_required_env_var(var_name):
     return value
 
 
+def get_optional_env_var(var_name):
+    """Get an optional environment variable."""
+    value = os.getenv(var_name)
+    return value if value is not None else []
+
+
 # Configuration from environment variables - no defaults, fail if missing
 RABBITMQ_USERNAME = get_required_env_var('RABBITMQ_USERNAME')
 RABBITMQ_PASSWORD = get_required_env_var('RABBITMQ_PASSWORD')
@@ -26,6 +33,15 @@ QUEUE_NAME = get_required_env_var('QUEUE_NAME')
 TOPIC = get_required_env_var('TOPIC')
 EXCHANGES = get_required_env_var('EXCHANGES').split(',')
 WEBHOOK_URL = get_required_env_var('WEBHOOK_URL')
+
+# Optional configuration
+IGNORED_EVENT_TYPES = get_optional_env_var('IGNORED_EVENT_TYPES').split(',')
+
+
+def log_with_timestamp(message):
+    """Log a message with timestamp."""
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f"[{timestamp}] {message}")
 
 
 def setup_connection():
@@ -43,10 +59,10 @@ def setup_connection():
                 blocked_connection_timeout=300
             )
             connection = pika.BlockingConnection(parameters)
-            print(f"Connected to RabbitMQ at {host}")
+            log_with_timestamp(f"Connected to RabbitMQ at {host}")
             return connection
         except pika.exceptions.AMQPConnectionError as e:
-            print(f"Failed to connect to {host}: {e}")
+            log_with_timestamp(f"Failed to connect to {host}: {e}")
     raise Exception("Could not connect to any RabbitMQ host")
 
 
@@ -63,7 +79,7 @@ def setup_channel(channel):
 
         # Bind queue to exchange with routing key 'notifications.*'
         channel.queue_bind(exchange=exchange, queue=QUEUE_NAME, routing_key=TOPIC)
-        print(f"Bound queue '{QUEUE_NAME}' to exchange '{exchange}' with routing key '{TOPIC}'")
+        log_with_timestamp(f"Bound queue '{QUEUE_NAME}' to exchange '{exchange}' with routing key '{TOPIC}'")
 
 
 def callback(ch, method, properties, body):
@@ -86,6 +102,12 @@ def callback(ch, method, properties, body):
                 oslo_message = {}
         event_type = oslo_message.get('event_type', 'unknown')
 
+        # Check if this event type should be ignored
+        if event_type in IGNORED_EVENT_TYPES:
+            log_with_timestamp(f"Ignoring event type: {event_type}")
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+            return
+
         # Extract additional context information
         context_project_name = oslo_message.get('_context_project_name', 'unknown')
         context_user_name = oslo_message.get('_context_user_name', 'unknown')
@@ -100,24 +122,23 @@ def callback(ch, method, properties, body):
             state = payload.get('state', 'unknown')
             state_description = payload.get('state_description', 'unknown')
 
-        print(f"Event type: {event_type} | Project: {context_project_name} | User: {context_user_name} | Instance: {display_name} | State: {state} | Description: {state_description}")
+        log_with_timestamp(f"Event type: {event_type} | Project: {context_project_name} | User: {context_user_name} | Instance: {display_name} | State: {state} | Description: {state_description}")
 
         # Send as JSON blob via POST
         response = requests.post(WEBHOOK_URL, json=notification)
         response.raise_for_status()  # Raise error on bad status
-        print(f"Successfully sent to webhook: {response.status_code}")
 
         # Acknowledge the message
         ch.basic_ack(delivery_tag=method.delivery_tag)
     except json.JSONDecodeError as e:
-        print(f"Invalid JSON in message: {e}")
+        log_with_timestamp(f"Invalid JSON in message: {e}")
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
     except requests.RequestException as e:
-        print(f"Failed to send to webhook: {e}")
+        log_with_timestamp(f"Failed to send to webhook: {e}")
         # Optionally nack and requeue: ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)  # Or discard on failure
     except Exception as e:
-        print(f"Error processing message: {e}")
+        log_with_timestamp(f"Error processing message: {e}")
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
 
@@ -131,11 +152,11 @@ def main():
     channel.basic_qos(prefetch_count=1)  # Process one message at a time
     channel.basic_consume(queue=QUEUE_NAME, on_message_callback=callback)
 
-    print(f"Listening for notifications on queue '{QUEUE_NAME}'...")
+    log_with_timestamp(f"Listening for notifications on queue '{QUEUE_NAME}'...")
     try:
         channel.start_consuming()
     except KeyboardInterrupt:
-        print("Interrupted, closing connection...")
+        log_with_timestamp("Interrupted, closing connection...")
         channel.stop_consuming()
     finally:
         connection.close()
