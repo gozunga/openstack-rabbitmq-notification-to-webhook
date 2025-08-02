@@ -42,6 +42,7 @@ def log_with_timestamp(message):
     """Log a message with timestamp."""
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     print(f"[{timestamp}] {message}")
+    sys.stdout.flush()  # Force flush to ensure logs appear in Docker containers
 
 
 def setup_connection():

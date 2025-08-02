@@ -16,5 +16,5 @@ RUN uv pip install -r requirements.txt --system
 # Copy application code
 COPY app/ ./app/
 
-# Run the application
-CMD ["python", "app/openstack-rabbitmq-notification-to-webhook.py"]
+# Run the application with unbuffered output
+CMD ["python", "-u", "app/openstack-rabbitmq-notification-to-webhook.py"]
