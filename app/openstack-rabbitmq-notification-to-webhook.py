@@ -5,6 +5,7 @@ import sys
 import os
 from dotenv import load_dotenv
 from datetime import datetime
+import pytz
 
 # Load environment variables from .env file
 load_dotenv()
@@ -37,10 +38,19 @@ WEBHOOK_URL = get_required_env_var('WEBHOOK_URL')
 # Optional configuration
 IGNORED_EVENT_TYPES = get_optional_env_var('IGNORED_EVENT_TYPES').split(',')
 
+# Timezone configuration
+TZ_NAME = get_optional_env_var('TZ') or 'UTC'
+
 
 def log_with_timestamp(message):
-    """Log a message with timestamp."""
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    """Log a message with timestamp in the configured timezone."""
+    try:
+        tz = pytz.timezone(TZ_NAME)
+        timestamp = datetime.now(tz).strftime('%Y-%m-%d %H:%M:%S %Z')
+    except pytz.exceptions.UnknownTimeZoneError:
+        # Fallback to UTC if timezone is invalid
+        timestamp = datetime.now(pytz.UTC).strftime('%Y-%m-%d %H:%M:%S UTC')
+    
     print(f"[{timestamp}] {message}")
     sys.stdout.flush()  # Force flush to ensure logs appear in Docker containers
 
