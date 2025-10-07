@@ -10,7 +10,6 @@ import pytz
 # Load environment variables from .env file
 load_dotenv()
 
-
 def get_required_env_var(var_name):
     """Get a required environment variable or exit if not found."""
     value = os.getenv(var_name)
@@ -19,12 +18,10 @@ def get_required_env_var(var_name):
         sys.exit(1)
     return value
 
-
 def get_optional_env_var(var_name):
     """Get an optional environment variable."""
     value = os.getenv(var_name)
     return value if value is not None else []
-
 
 # Configuration from environment variables - no defaults, fail if missing
 RABBITMQ_USERNAME = get_required_env_var('RABBITMQ_USERNAME')
@@ -41,7 +38,6 @@ IGNORED_EVENT_TYPES = get_optional_env_var('IGNORED_EVENT_TYPES').split(',')
 # Timezone configuration
 TZ_NAME = get_optional_env_var('TZ') or 'UTC'
 
-
 def log_with_timestamp(message):
     """Log a message with timestamp in the configured timezone."""
     try:
@@ -53,7 +49,6 @@ def log_with_timestamp(message):
     
     print(f"[{timestamp}] {message}")
     sys.stdout.flush()  # Force flush to ensure logs appear in Docker containers
-
 
 def setup_connection():
     """
@@ -76,22 +71,30 @@ def setup_connection():
             log_with_timestamp(f"Failed to connect to {host}: {e}")
     raise Exception("Could not connect to any RabbitMQ host")
 
-
 def setup_channel(channel):
     """
-    Declare the queue and bind it to the specified exchanges with the topic.
+    Declare a quorum queue and bind it to the specified exchanges with the topic.
     Assumes exchanges are topic-type, as per OpenStack notifications.
     """
-    channel.queue_declare(queue=QUEUE_NAME, durable=True)  # Durable queue for persistence
+    # Declare a quorum queue with specific arguments
+    channel.queue_declare(
+        queue=QUEUE_NAME,
+        durable=True,
+        arguments={
+            'x-queue-type': 'quorum',
+            'x-delivery-limit': 10,  # Optional: limits redelivery attempts
+            'x-dead-letter-exchange': '',  # Optional: specify if DLX is needed
+            'x-dead-letter-routing-key': f"{QUEUE_NAME}.dlq"  # Optional: DLQ routing key
+        }
+    )
 
     for exchange in EXCHANGES:
         # Declare exchange if not exists (topic type for OpenStack notifications)
         channel.exchange_declare(exchange=exchange, exchange_type='topic', durable=True)
 
-        # Bind queue to exchange with routing key 'notifications.*'
+        # Bind queue to exchange with routing key
         channel.queue_bind(exchange=exchange, queue=QUEUE_NAME, routing_key=TOPIC)
-        log_with_timestamp(f"Bound queue '{QUEUE_NAME}' to exchange '{exchange}' with routing key '{TOPIC}'")
-
+        log_with_timestamp(f"Bound quorum queue '{QUEUE_NAME}' to exchange '{exchange}' with routing key '{TOPIC}'")
 
 def callback(ch, method, properties, body):
     """
@@ -101,8 +104,6 @@ def callback(ch, method, properties, body):
     try:
         # Assume body is JSON-encoded (as in OpenStack notifications)
         notification = json.loads(body)
-
-        # print(f"Received notification: {json.dumps(notification, indent=2)}")
 
         # Display only the event_type
         oslo_message = notification.get('oslo.message', '{}')
@@ -146,12 +147,10 @@ def callback(ch, method, properties, body):
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
     except requests.RequestException as e:
         log_with_timestamp(f"Failed to send to webhook: {e}")
-        # Optionally nack and requeue: ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
-        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)  # Or discard on failure
+        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)  # Discard on failure
     except Exception as e:
         log_with_timestamp(f"Error processing message: {e}")
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-
 
 def main():
     connection = setup_connection()
@@ -163,7 +162,7 @@ def main():
     channel.basic_qos(prefetch_count=1)  # Process one message at a time
     channel.basic_consume(queue=QUEUE_NAME, on_message_callback=callback)
 
-    log_with_timestamp(f"Listening for notifications on queue '{QUEUE_NAME}'...")
+    log_with_timestamp(f"Listening for notifications on quorum queue '{QUEUE_NAME}'...")
     try:
         channel.start_consuming()
     except KeyboardInterrupt:
@@ -171,7 +170,6 @@ def main():
         channel.stop_consuming()
     finally:
         connection.close()
-
 
 if __name__ == "__main__":
     main()
